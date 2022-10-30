@@ -2,6 +2,7 @@ import gym
 import argparse
 import logging
 from gym_carla.env.carla_env import CarlaEnv
+from temp import Temp
 
 
 if __name__=='__main__':
@@ -105,9 +106,13 @@ if __name__=='__main__':
 
     #env=gym.make('CarlaEnv-v0')
     env=CarlaEnv(args)
+    #e=Temp(args)
     
     done=False
-
+    #env.reset()
+    while(True):
+        env.step(1)
+        #e.step()
     # for i in range(100):
     #     env.reset()
     #     while not done:

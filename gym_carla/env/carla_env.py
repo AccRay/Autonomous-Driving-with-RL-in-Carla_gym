@@ -1,11 +1,11 @@
-from lib2to3.pgen2 import driver
 import gym
 import logging
 import carla
 import random
+import time
 import numpy as np
 
-class CarlaEnv(gym.Env):
+class CarlaEnv:
     def __init__(self,args) -> None:
         super().__init__()
         self.roads=args.roads 
@@ -32,13 +32,12 @@ class CarlaEnv(gym.Env):
         self.map=self.world.get_map()
         logging.info('Carla server connected')
 
-        #generate vehicle spawn points in chosen route
-        self.vehicle_spawn_points=[]
+        #generate ego vehicle spawn points in chosen route
+        self.ego_spawn_points=[]
         spawn_points=list(self.map.get_spawn_points())
         for spawn_point in spawn_points:
             if self.map.get_waypoint(spawn_point.location).road_id in self.roads:
-                self.vehicle_spawn_points.append(spawn_point)
-        #print(len(self.vehicle_spawn_points))
+                self.ego_spawn_points.append(spawn_point)
         #random.seed(self.seed)
 
         #Set weather
@@ -54,17 +53,25 @@ class CarlaEnv(gym.Env):
         self.vehicle_polygons.append(vehicle_poly_dict)
 
         #Spawn the ego vehicle
-        while True:
-            if not self.sync:
-                self.world.tick()
-            else:
-                self.world.wait_for_tick()
+
+    def __del__(self):
+        logging.info('\n Destroying %d vehicles',len(self.companion_vehicles))
+        self.client.apply_batch([carla.command.DestroyActor(x) for x in self.companion_vehicles])
+
+    def reset(self):
+        if self.sync:
+            self.world.tick()
+        else:
+            self.world.wait_for_tick()
+        return
 
     def step(self, action):
-        self.world.tick()
-    
-    def reset(self):
-        return 
+        if self.sync:
+            self.world.tick()
+            time.sleep(0.1)
+        else:
+            temp=self.world.wait_for_tick()
+            self.world.on_tick(lambda _:{})
 
     def close(self):
         return
@@ -73,6 +80,14 @@ class CarlaEnv(gym.Env):
         return
     
     def render(self,mode):
+        pass
+
+    def _get_state(self):
+        """Get the current simulation state"""
+        pass
+
+    def _get_reward(self):
+        """Calculate the step reward"""
         pass
 
     def _create_vehicle_blueprint(self,actor_filter,ego=False,color=None,number_of_wheels=[4]):
@@ -99,7 +114,7 @@ class CarlaEnv(gym.Env):
         if not ego:
             bp.set_attribute('role_name','autopilot')
         else:
-            bp.set_attribute('role_name','ego')
+            bp.set_attribute('role_name','hero')
         return bp
 
     def _init_renderer(self):
@@ -152,7 +167,8 @@ class CarlaEnv(gym.Env):
         traffic_manager.set_global_distance_to_leading_vehicle(3.0)
         # Set physical mode only for cars around ego vehicle to save computation
         traffic_manager.set_hybrid_physics_mode(True)
-        traffic_manager.global_percentage_speed_difference(100)
+        traffic_manager.set_hybrid_physics_radius(70.0)
+        traffic_manager.global_percentage_speed_difference(-0)
 
         if self.sync:
             settings=self.world.get_settings()
@@ -193,9 +209,13 @@ class CarlaEnv(gym.Env):
                 logging.error(response.error)
             else:
                 print("Future Actor",response.actor_id)
-                self.companion_vehicles.append(response.actor_id)
+                self.companion_vehicles.append(self.world.get_actor(response.actor_id))
+                #set vehicles to ignore traffic lights
+                traffic_manager.ignore_lights_percentage(
+                    self.world.get_actor(response.actor_id),100)
+                #print(self.world.get_actor(response.actor_id).attributes)
         
-        msg='requested %d vehicles, generate %d vehicles'
+        msg='requested %d vehicles, generate %d vehicles, press Ctrl+C to exit.'
         logging.info(msg,self.num_of_vehicles,len(self.companion_vehicles))
 
     def _try_spawn_random_walker_at(self,transform):
@@ -236,14 +256,6 @@ class CarlaEnv(gym.Env):
             poly=np.matmul(R,poly_local).transpose()+np.repeat([[x,y]],4,axis=0)
             actor_poly_dict[actor.id]=poly
         return actor_poly_dict
-
-    def _get_state(self):
-        """Get the current simulation state"""
-        pass
-
-    def _get_reward(self):
-        """Calculate the step reward"""
-        pass
 
     def _terminal(self):
         """Calculate whether to terminate the current episode"""
