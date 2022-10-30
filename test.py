@@ -32,11 +32,11 @@ if __name__=='__main__':
     argparser.add_argument(
         '--sync',
         action='store_true',
-        default=False,
+        default=True,
         help='Synchronous mode execution')
     argparser.add_argument(
         '--fps',metavar='FPS',
-        default=20,type=int,
+        default=5,type=int,
         help="The fps of server running speed")
     argparser.add_argument(
         '--filter',
@@ -74,7 +74,7 @@ if __name__=='__main__':
     argparser.add_argument(
         '-n','--num_of_vehicles',type=int,
         help='Total vehicles number which run in simulation',
-        default=20)
+        default=30)
     argparser.add_argument(
         '-sa','--sampling_resolution',type=float,
         help='Distance between generated two waypoints',
@@ -109,9 +109,10 @@ if __name__=='__main__':
     #e=Temp(args)
     
     done=False
-    #env.reset()
+    env.reset()
     while(True):
         env.step(1)
+        #env.step(1)
         #e.step()
     # for i in range(100):
     #     env.reset()
