@@ -6,12 +6,12 @@ import random
 import time
 import numpy as np
 from gym_carla.env.util import *
-from gym_carla.env.util.sensor import CollisionSensor
+from gym_carla.env.sensor import CollisionSensor
+from gym_carla.env.route_planner import *
 
 class CarlaEnv:
     def __init__(self,args) -> None:
         super().__init__()
-        self.roads=args.roads 
         self.host=args.host
         self.port=args.port
         self.tm_port=args.tm_port
@@ -27,6 +27,7 @@ class CarlaEnv:
         self.num_of_vehicles=args.num_of_vehicles
         self.seed=args.seed
         self.sampling_resolution=args.sampling_resolution
+        self.hybrid=args.hybrid
 
         logging.info('listening to server %s:%s', args.host, args.port)
         self.client=carla.Client(self.host,self.port)
@@ -34,13 +35,15 @@ class CarlaEnv:
         self.world=self.client.load_world(args.map)
         self.map=self.world.get_map()
         logging.info('Carla server connected')
+        self.route=RouteTopology(self.map,self.sampling_resolution)
 
         #generate ego vehicle spawn points in chosen route
-        self.ego_spawn_points=[]
-        spawn_points=list(self.map.get_spawn_points())
-        for spawn_point in spawn_points:
-            if self.map.get_waypoint(spawn_point.location).road_id in self.roads:
-                self.ego_spawn_points.append(spawn_point)
+        self.ego_spawn_points=self.route.get_spawn_points()
+        # spawn_points=list(self.map.get_spawn_points())
+        # for spawn_point in spawn_points:
+        #     #make sure ego vehicle runs in the outer ring of chousen route
+        #     if self.map.get_waypoint(spawn_point.location).road_id in self.roads:
+        #         self.ego_spawn_points.append(spawn_point)
         #random.seed(self.seed)
 
         # Set fixed simulation step for synchronous mode
@@ -76,11 +79,11 @@ class CarlaEnv:
 
     def __del__(self):
         logging.info('\n Destroying all vehicles')
-        self._clear_actors(['vehicle.*','sensor.other.collison'])
+        self._clear_actors(['vehicle.*','sensor.other.collison','sensor.camera.rgb'])
 
     def reset(self):
         if self.ego_vehicle is not None:
-            self._clerar_actors(['sensor.other.collison',self.ego_filter,'sensor.camera.rgb'])
+            self._clear_actors(['sensor.other.collison',self.ego_filter,'sensor.camera.rgb'])
             self.ego_vehicle=None
             self.collision_sensor=None
             self.camera=None
@@ -226,6 +229,8 @@ class CarlaEnv:
         if vehicle is not None:
             return vehicle
         
+        if vehicle is None:
+            logging.warn("Ego vehicle generation fail")
         return None         
     
     def _spawn_companion_vehicles(self):
@@ -237,8 +242,9 @@ class CarlaEnv:
         # every vehicle keeps a distance of 3.0 meter
         traffic_manager.set_global_distance_to_leading_vehicle(3.0)
         # Set physical mode only for cars around ego vehicle to save computation
-        traffic_manager.set_hybrid_physics_mode(True)
-        traffic_manager.set_hybrid_physics_radius(70.0)
+        if self.hybrid:
+            traffic_manager.set_hybrid_physics_mode(True)
+            traffic_manager.set_hybrid_physics_radius(70.0)
         traffic_manager.global_percentage_speed_difference(-0)
 
         if self.sync:
@@ -274,7 +280,7 @@ class CarlaEnv:
             if response.has_error():
                 logging.error(response.error)
             else:
-                print("Future Actor",response.actor_id)
+                #print("Future Actor",response.actor_id)
                 self.companion_vehicles.append(self.world.get_actor(response.actor_id))
                 #set vehicles to ignore traffic lights
                 traffic_manager.ignore_lights_percentage(
@@ -283,7 +289,7 @@ class CarlaEnv:
         
         #Set all cars as dangerous car to test collison sensor
         #crazy car ignore traffic light, do not keep safe distance and very fast
-        for i in range(len(self.companion_vehicles)):
+        for i in range(1):
             danger_car=self.companion_vehicles[i]
             traffic_manager.ignore_lights_percentage(danger_car,100)
             traffic_manager.distance_to_leading_vehicle(danger_car,0)

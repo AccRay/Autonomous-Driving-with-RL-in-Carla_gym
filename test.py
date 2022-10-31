@@ -78,7 +78,7 @@ if __name__=='__main__':
     argparser.add_argument(
         '-sa','--sampling_resolution',type=float,
         help='Distance between generated two waypoints',
-        default=4.0)
+        default=1000.0)
     argparser.add_argument(
         '--tm-port',
         metavar='P',
@@ -88,6 +88,7 @@ if __name__=='__main__':
     argparser.add_argument(
         '--hybrid',
         action='store_true',
+        default=True,
         help='Activate hybrid mode for Traffic Manager')
     argparser.add_argument(
         '--no-rendering',
