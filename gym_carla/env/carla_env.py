@@ -1,13 +1,13 @@
-from queue import Queue
-import gym
 import logging
 import carla
 import random
 import time
 import numpy as np
-from gym_carla.env.util import *
+from queue import Queue
+from gym_carla.env.util.pid_controller import *
+from gym_carla.env.util.misc import draw_waypoints
 from gym_carla.env.sensor import CollisionSensor
-from gym_carla.env.route_planner import *
+from gym_carla.env.route_planner import GlobalPlanner,LocalPlanner
 
 class CarlaEnv:
     def __init__(self,args) -> None:
@@ -28,6 +28,7 @@ class CarlaEnv:
         self.seed=args.seed
         self.sampling_resolution=args.sampling_resolution
         self.hybrid=args.hybrid
+        self.stride=args.stride
 
         logging.info('listening to server %s:%s', args.host, args.port)
         self.client=carla.Client(self.host,self.port)
@@ -35,19 +36,30 @@ class CarlaEnv:
         self.world=self.client.load_world(args.map)
         self.map=self.world.get_map()
         logging.info('Carla server connected')
-        self.route=RouteTopology(self.map,self.sampling_resolution)
+
+        # Record the time of total steps and resetting steps
+        self.reset_step = 0
+        self.total_step = 0
+        self.origin_settings=self.world.get_settings()
 
         #generate ego vehicle spawn points in chosen route
-        self.ego_spawn_points=self.route.get_spawn_points()
+        self.global_panner=GlobalPlanner(self.map,self.sampling_resolution)
+        self.local_planner=None
+        self.ego_spawn_waypoints=self.global_panner.get_spawn_points()
+        #former_wp record the ego vehicle waypoint of former step
+        self.former_wp=None
+
+        if self.debug:
+            draw_waypoints(self.world,self.global_panner.get_route())
         # spawn_points=list(self.map.get_spawn_points())
         # for spawn_point in spawn_points:
         #     #make sure ego vehicle runs in the outer ring of chousen route
         #     if self.map.get_waypoint(spawn_point.location).road_id in self.roads:
         #         self.ego_spawn_points.append(spawn_point)
+
         #random.seed(self.seed)
 
         # Set fixed simulation step for synchronous mode
-        self.origin_settings=self.world.get_settings()
         if self.sync:
             settings=self.world.get_settings()
             if not settings.synchronous_mode:
@@ -62,13 +74,10 @@ class CarlaEnv:
         self.companion_vehicles=[]
         self._spawn_companion_vehicles()
 
-        #Get actors polygon list
-        self.vehicle_polygons=[]
-        vehicle_poly_dict=self._get_actor_polygons('vehicle.*')
-        self.vehicle_polygons.append(vehicle_poly_dict)
-
         #Ego vehicle
         self.ego_vehicle=None
+        #the vehicle in front of ego vehicle
+        self.vehicle_front=None
 
         #Collision sensor
         self.collision_sensor=None
@@ -79,6 +88,7 @@ class CarlaEnv:
 
     def __del__(self):
         logging.info('\n Destroying all vehicles')
+        self.world.apply_settings(self.origin_settings)
         self._clear_actors(['vehicle.*','sensor.other.collison','sensor.camera.rgb'])
 
     def reset(self):
@@ -89,12 +99,26 @@ class CarlaEnv:
             self.camera=None
             self.sensor_queue.clear()
 
+        #Get actors polygon list
+        self.vehicle_polygons=[]
+        vehicle_poly_dict=self._get_actor_polygons('vehicle.*')
+        self.vehicle_polygons.append(vehicle_poly_dict)
+
         #try to spawn ego vehicle 
         while(self.ego_vehicle is None):
-            transform=random.choice(self.ego_spawn_points)
-            self.ego_vehicle=self._try_spawn_ego_vehicle_at(transform)
+            spawn_waypoint=random.choice(self.ego_spawn_waypoints)
+            self.former_wp=spawn_waypoint
+            self.ego_vehicle=self._try_spawn_ego_vehicle_at(spawn_waypoint.transform)
         self.collision_sensor=CollisionSensor(self.ego_vehicle)
-        self.ego_vehicle.set_autopilot(True,self.tm_port)
+
+        #add route planner for ego vehicle
+        self.local_planner=LocalPlanner(self.ego_vehicle)
+        self.local_planner.set_global_plan(self.global_panner.get_route())
+
+        #set ego vehicle controller
+        #self.ego_vehicle.set_autopilot(self.debug,self.tm_port)
+        if self.debug:
+            self.controller=VehiclePIDController(self.ego_vehicle)
 
         #test code for synchronous mode
         camera_bp=self.world.get_blueprint_library().find('sensor.camera.rgb')
@@ -102,6 +126,10 @@ class CarlaEnv:
         self.camera=self.world.spawn_actor(camera_bp,camera_transform,attach_to=self.ego_vehicle)
         self.camera.listen(lambda image:self._sensor_callback(image,self.sensor_queue))
         # 
+
+        #Update timesteps
+        self.time_step=0
+        self.reset_step+=1
 
         if self.sync:
             self.world.tick()
@@ -111,10 +139,46 @@ class CarlaEnv:
                 carla.Rotation(pitch=-90)))
         else:
             self.world.wait_for_tick()
-        return self._get_state()
 
-    def step(self, action):
+        #return self._get_state()
+
+    def step(self,action):
+        # Calculate acceleration and steering
+        self.discrete=False
+        if self.discrete:
+            acc = self.discrete_act[0][action//self.n_steer]
+            steer = self.discrete_act[1][action%self.n_steer]
+        else:
+            acc = action[0]
+            steer = action[1]
+
+        # Convert acceleration to throttle and brake
+        if acc > 0:
+            throttle = np.clip(acc/3,0,1)
+            brake = 0
+        else:
+            throttle = 0
+            brake = np.clip(-acc/8,0,1)
+
+        #route planner
+        next_wps,_,self.vehicle_front=self.local_planner.run_step()
+
+        ego_wp=self.map.get_waypoint(self.ego_vehicle.get_location(),project_to_road=False)
+        if self.debug:
+            control=self.controller.run_step(36,next_wps[0])
+            #print(th_br)
+            if acc > 0:
+                throttle = np.clip(acc/4,0,1)
+                brake = 0
+            else:
+                throttle = 0
+                brake = np.clip(-acc/3,0,1)
+            act=carla.VehicleControl(throttle=float(throttle),steer=float(steer),brake=float(brake))
+
         if self.sync:
+            if self.debug:
+                self.ego_vehicle.apply_control(control)
+
             self.world.tick()
             spectator=self.world.get_spectator()
             transform=self.ego_vehicle.get_transform()
@@ -126,7 +190,8 @@ class CarlaEnv:
             temp=self.world.wait_for_tick()
             self.world.on_tick(lambda _:{})
 
-        return 
+        if ego_wp.transform.location.distance(self.former_wp.transform.location)>=self.sampling_resolution:
+            self.former_wp=next_wps[0]
         #return self._get_state(),self._get_reward(),self._terminal(),self._get_info()
 
     def close(self):
@@ -140,7 +205,10 @@ class CarlaEnv:
 
     def _get_state(self):
         """Get the current simulation state"""
-        pass
+        ego_wp=self.map.get_waypoint(self.ego_vehicle.get_location(),project_to_road=True)
+        state_wps=self.local_planner._compute_next_waypoints(ego_wp,self.stride)
+
+        return state_wps
 
     def _get_reward(self):
         """Calculate the step reward"""
@@ -225,13 +293,10 @@ class CarlaEnv:
         if not overlap:
             ego_bp=self._create_vehicle_blueprint(self.ego_filter,ego=True,color='0,255,0')
             vehicle = self.world.try_spawn_actor(ego_bp, transform)
+            if vehicle is None:
+                logging.warn("Ego vehicle generation fail")
 
-        if vehicle is not None:
-            return vehicle
-        
-        if vehicle is None:
-            logging.warn("Ego vehicle generation fail")
-        return None         
+        return vehicle         
     
     def _spawn_companion_vehicles(self):
         """

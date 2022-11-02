@@ -12,6 +12,7 @@ if __name__=='__main__':
         '-v', '--verbose',
         action='store_true',
         dest='debug',
+        default=True,
         help='Print debug information')
     argparser.add_argument(
         '--host',
@@ -78,7 +79,7 @@ if __name__=='__main__':
     argparser.add_argument(
         '-sa','--sampling_resolution',type=float,
         help='Distance between generated two waypoints',
-        default=1000.0)
+        default=50.0)
     argparser.add_argument(
         '--tm-port',
         metavar='P',
@@ -96,10 +97,14 @@ if __name__=='__main__':
         default=False,
         help='Activate no rendering mode')
     argparser.add_argument(
+        '--stride',type=int,
+        default=10,
+        help='The number of upfront waypoints each state should include')
+    argparser.add_argument(
         '-roads',
         type=set,
         default={8,11,0,40,41,1,61,62,2,117,118,3,13,15,20,5,93,94,6,157,158,7,14},
-        help='road id set for chosen roads')
+        help='road id set for chosen route')
     args=argparser.parse_args()
 
     log_level=logging.DEBUG if args.debug else logging.INFO
@@ -111,10 +116,18 @@ if __name__=='__main__':
     
     done=False
     env.reset()
-    while(True):
-        env.step(1)
-        #env.step(1)
-        #e.step()
+    try:
+        while(True):
+            action=[2.0,0.0]
+            env.step(action)
+            #env.step(1)
+            #e.step()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        env.__del__()
+        logging.info('\nDone.')
+    
     # for i in range(100):
     #     env.reset()
     #     while not done:
