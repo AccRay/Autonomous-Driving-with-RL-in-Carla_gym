@@ -49,13 +49,8 @@ class CarlaEnv:
         #former_wp record the ego vehicle waypoint of former step
         self.former_wp=None
 
-        if self.debug:
-            draw_waypoints(self.world,self.global_panner.get_route())
-        # spawn_points=list(self.map.get_spawn_points())
-        # for spawn_point in spawn_points:
-        #     #make sure ego vehicle runs in the outer ring of chousen route
-        #     if self.map.get_waypoint(spawn_point.location).road_id in self.roads:
-        #         self.ego_spawn_points.append(spawn_point)
+        # if self.debug:
+        #     draw_waypoints(self.world,self.global_panner.get_route())
 
         #random.seed(self.seed)
 
@@ -114,11 +109,14 @@ class CarlaEnv:
         #add route planner for ego vehicle
         self.local_planner=LocalPlanner(self.ego_vehicle)
         self.local_planner.set_global_plan(self.global_panner.get_route())
+        self.local_planner.run_step()
 
         #set ego vehicle controller
         #self.ego_vehicle.set_autopilot(self.debug,self.tm_port)
         if self.debug:
-            self.controller=VehiclePIDController(self.ego_vehicle)
+            self.controller=VehiclePIDController(self.ego_vehicle,
+                {'K_P': 1.95, 'K_I': 0.05, 'K_D': 0.2, 'dt': 1.0 / 20.0},
+                {'K_P': 1.0, 'K_I': 0.05, 'K_D': 0, 'dt': 1.0 / 20.0})
 
         #test code for synchronous mode
         camera_bp=self.world.get_blueprint_library().find('sensor.camera.rgb')
@@ -162,9 +160,11 @@ class CarlaEnv:
 
         #route planner
         next_wps,_,self.vehicle_front=self.local_planner.run_step()
-
         ego_wp=self.map.get_waypoint(self.ego_vehicle.get_location(),project_to_road=False)
+
         if self.debug:
+            draw_waypoints(self.world, [next_wps[0]], 0.0,z=1)
+            draw_waypoints(self.world, [ego_wp], 1.0)
             control=self.controller.run_step(36,next_wps[0])
             #print(th_br)
             if acc > 0:

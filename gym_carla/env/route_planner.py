@@ -4,7 +4,8 @@ import networkx as nx
 import logging
 from enum import Enum
 from collections import deque
-from gym_carla.env.util.misc import vector,compute_magnitude_angle,distance_vehicle,is_within_distance_ahead
+from gym_carla.env.util.misc import vector,compute_magnitude_angle,distance_vehicle,\
+    is_within_distance_ahead,draw_waypoints
 #import matplotlib.pyplot as plt
 
 class RoadOption(Enum):
