@@ -37,7 +37,7 @@ if __name__=='__main__':
         help='Synchronous mode execution')
     argparser.add_argument(
         '--fps',metavar='FPS',
-        default=5,type=int,
+        default=20,type=int,
         help="The fps of server running speed")
     argparser.add_argument(
         '--filter',
@@ -79,7 +79,7 @@ if __name__=='__main__':
     argparser.add_argument(
         '-sa','--sampling_resolution',type=float,
         help='Distance between generated two waypoints',
-        default=50.0)
+        default=4.0)
     argparser.add_argument(
         '--tm-port',
         metavar='P',

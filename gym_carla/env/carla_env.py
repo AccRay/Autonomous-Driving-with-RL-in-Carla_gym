@@ -43,16 +43,15 @@ class CarlaEnv:
         self.origin_settings=self.world.get_settings()
 
         #generate ego vehicle spawn points in chosen route
-        self.global_panner=GlobalPlanner(self.map,self.sampling_resolution)
+        self.global_planner=GlobalPlanner(self.map,self.sampling_resolution)
         self.local_planner=None
-        self.ego_spawn_waypoints=self.global_panner.get_spawn_points()
+        self.ego_spawn_waypoints=self.global_planner.get_spawn_points()
         #former_wp record the ego vehicle waypoint of former step
         self.former_wp=None
 
-        # if self.debug:
-        #     draw_waypoints(self.world,self.global_panner.get_route())
-
-        #random.seed(self.seed)
+        if self.debug:
+            #draw_waypoints(self.world,self.global_panner.get_route())
+            random.seed(self.seed)
 
         # Set fixed simulation step for synchronous mode
         if self.sync:
@@ -106,9 +105,26 @@ class CarlaEnv:
             self.ego_vehicle=self._try_spawn_ego_vehicle_at(spawn_waypoint.transform)
         self.collision_sensor=CollisionSensor(self.ego_vehicle)
 
+        #let the client interact with server
+        if self.sync:
+            self.world.tick()
+
+            spectator=self.world.get_spectator()
+            transform=self.ego_vehicle.get_transform()
+            spectator.set_transform(carla.Transform(transform.location+carla.Location(z=50),
+                carla.Rotation(pitch=-90)))
+        else:
+            self.world.wait_for_tick()
+       
+        """Attention:
+        get_location() Returns the actor's location the client recieved during last tick. The method does not call the simulator.
+        Hence the world should first tick before calling get_location, or this could cause fatal bug"""
+        #ego_wp=self.map.get_waypoint(self.ego_vehicle.get_location())
+
         #add route planner for ego vehicle
-        self.local_planner=LocalPlanner(self.ego_vehicle)
-        self.local_planner.set_global_plan(self.global_panner.get_route())
+        self.local_planner=LocalPlanner(self.ego_vehicle,self.world,self.map)
+        self.local_planner.set_global_plan(self.global_planner.get_route(
+            self.map.get_waypoint(self.ego_vehicle.get_location())))
         self.local_planner.run_step()
 
         #set ego vehicle controller
@@ -128,15 +144,6 @@ class CarlaEnv:
         #Update timesteps
         self.time_step=0
         self.reset_step+=1
-
-        if self.sync:
-            self.world.tick()
-            spectator=self.world.get_spectator()
-            transform=self.ego_vehicle.get_transform()
-            spectator.set_transform(carla.Transform(transform.location+carla.Location(z=50),
-                carla.Rotation(pitch=-90)))
-        else:
-            self.world.wait_for_tick()
 
         #return self._get_state()
 
@@ -163,9 +170,14 @@ class CarlaEnv:
         ego_wp=self.map.get_waypoint(self.ego_vehicle.get_location(),project_to_road=False)
 
         if self.debug:
+            if next_wps[0].id !=self.former_wp.id:
+                self.former_wp=next_wps[0]
+            if ego_wp.id==self.former_wp.id:
+                print()
+
             draw_waypoints(self.world, [next_wps[0]], 0.0,z=1)
             draw_waypoints(self.world, [ego_wp], 1.0)
-            control=self.controller.run_step(36,next_wps[0])
+            control=self.controller.run_step(30,next_wps[0])
             #print(th_br)
             if acc > 0:
                 throttle = np.clip(acc/4,0,1)
@@ -173,7 +185,7 @@ class CarlaEnv:
             else:
                 throttle = 0
                 brake = np.clip(-acc/3,0,1)
-            act=carla.VehicleControl(throttle=float(throttle),steer=float(steer),brake=float(brake))
+            #act=carla.VehicleControl(throttle=float(throttle),steer=float(steer),brake=float(brake))
 
         if self.sync:
             if self.debug:

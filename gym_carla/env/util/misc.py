@@ -132,21 +132,6 @@ def compute_magnitude_angle(target_location, current_location, orientation):
 
     return (norm_target, d_angle)
 
-
-def distance_vehicle(waypoint, vehicle_transform):
-    """
-    Returns the 2D distance from a waypoint to a vehicle
-
-        :param waypoint: actual waypoint
-        :param vehicle_transform: transform of the target vehicle
-    """
-    loc = vehicle_transform.location
-    x = waypoint.transform.location.x - loc.x
-    y = waypoint.transform.location.y - loc.y
-
-    return math.sqrt(x * x + y * y)
-
-
 def vector(location_1, location_2):
     """
     Returns the unit vector from location_1 to location_2
