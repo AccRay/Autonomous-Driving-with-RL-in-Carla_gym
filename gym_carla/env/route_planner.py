@@ -1,12 +1,18 @@
 import carla
+import logging,random
 import numpy as np
 import networkx as nx
-import logging
 from enum import Enum
 from collections import deque
-from gym_carla.env.util.misc import vector,compute_magnitude_angle,distance_vehicle,\
+from gym_carla.env.util.misc import vector,compute_magnitude_angle,\
     is_within_distance_ahead,draw_waypoints
-#import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
+
+#the following sets define the chosen route
+ROADS={8,11,0,40,41,1,61,62,2,117,118,3,13,15,20,5,93,94,6,157,158,7,14}
+STRAIGHT={8,0,1,2,3,15,5,6,7}
+CURVE={11,13,20,14}
+JUNCTION={40,41,61,62,117,118,93,94,157,158}
 
 class RoadOption(Enum):
     """
@@ -31,10 +37,6 @@ class GlobalPlanner:
         self._wmap=map
 
         #code for simulation road generation
-        self.straight={8,0,1,2,3,15,5,6,7}
-        self.curve={11,13,20,14}
-        self.junction={40,41,61,62,117,118,93,94,157,158}
-        self.roads={8,11,0,40,41,1,61,62,2,117,118,3,13,15,20,5,93,94,6,157,158,7,14} #road id set for chosen roads
         self._route=[]
         self._topology = []
 
@@ -57,7 +59,7 @@ class GlobalPlanner:
         """Vehicle can only be spawned on straight road"""
         spawn_points=[]
         for wp in self._route:
-            if wp.road_id in self.straight:
+            if wp.road_id in STRAIGHT:
                 spawn_points.append(wp)
         
         return spawn_points
@@ -155,9 +157,9 @@ class GlobalPlanner:
 
     def _test_wp(self,wp):
         """Test if waypoint is on chosen route"""
-        if (wp.road_id in self.straight or wp.road_id in self.junction) and wp.lane_id==-1:
+        if (wp.road_id in STRAIGHT or wp.road_id in JUNCTION) and wp.lane_id==-1:
             return True
-        if wp.road_id in self.curve and wp.lane_id==1:
+        if wp.road_id in CURVE and wp.lane_id==1:
             return True
         return False
 
@@ -221,7 +223,6 @@ class LocalPlanner:
         self._vehicle = vehicle
         self._world = world
         self._map = map
-        self.roads={8,11,0,40,41,1,61,62,2,117,118,3,13,15,20,5,93,94,6,157,158,7,14} #road id set for chosen roads
 
         self._sampling_radius = 4
         self._min_distance = 1
@@ -232,21 +233,39 @@ class LocalPlanner:
 
         self._waypoints_queue = deque(maxlen=600)
         self._current_waypoint = self._map.get_waypoint(self._vehicle.get_location())
-        self._waypoints_queue.append( (self._current_waypoint, RoadOption.LANEFOLLOW))
-        #self._waypoints_queue.append( (self._current_waypoint.next(self._sampling_radius)[0], RoadOption.LANEFOLLOW))
         self._target_road_option = RoadOption.LANEFOLLOW
         self._stop_waypoint_creation=False
 
         self._last_traffic_light = None
         self._proximity_threshold = 15.0
 
-        self._compute_next_waypoints(k=200)
+        self._waypoints_queue.append( (self._current_waypoint, RoadOption.LANEFOLLOW))
+        #self._waypoints_queue.append( (self._current_waypoint.next(self._sampling_radius)[0], RoadOption.LANEFOLLOW))
+        #self._compute_next_waypoints(k=200)
 
     def run_step(self):
         waypoints = self._get_waypoints()
         red_light, vehicle_front = self._get_hazard()
         # red_light = False
         return waypoints, red_light, vehicle_front
+    
+    def get_incoming_waypoint_and_direction(self,steps=3):
+        """
+        Returns direction and waypoint at a distance ahead defined by the user.
+
+            :param steps: number of steps to get the incoming waypoint.
+        """
+        if len(self._waypoint_buffer)>steps:
+            return self._waypoint_buffer[steps]
+        else:
+            try:
+                wpt,direction=self._waypoint_buffer[-1]
+                return wpt,direction
+            except IndexError as i:
+                return None,RoadOption.VOID
+
+    def set_sampling_redius(self,sampling_resolution):
+        self._sampling_radius=sampling_resolution
 
     def set_global_plan(self, current_plan, stop_waypoint_creation=True, clean_queue=True):
         """
@@ -290,7 +309,9 @@ class LocalPlanner:
             last_waypoint = self._waypoints_queue[-1][0]
             next_waypoints = list(last_waypoint.next(self._sampling_radius))
 
-            if len(next_waypoints) == 1:
+            if len(next_waypoints)==0:
+                break
+            elif len(next_waypoints) == 1:
                 # only one option available ==> lanefollowing
                 next_waypoint = next_waypoints[0]
                 road_option = RoadOption.LANEFOLLOW
@@ -299,17 +320,16 @@ class LocalPlanner:
                     next_waypoints, last_waypoint)
 
                 # random choice between the possible options
-                #road_option = road_options_list[1]  
-                # road_option = random.choice(road_options_list)
+                road_option = road_options_list[1]  
+                #road_option = random.choice(road_options_list)
+                next_waypoint = next_waypoints[road_options_list.index(road_option)]
                 
-                #next_waypoint = next_waypoints[road_options_list.index(road_option)]
-                
-                idx=None
-                for i,wp in enumerate(next_waypoints):
-                    if wp.road_id in self.roads:
-                        next_waypoint=wp
-                        idx=i
-                road_option=road_options_list[idx]
+                # idx=None
+                # for i,wp in enumerate(next_waypoints):
+                #     if wp.road_id in ROADS:
+                #         next_waypoint=wp
+                #         idx=i
+                # road_option=road_options_list[idx]
 
             self._waypoints_queue.append((next_waypoint, road_option))
 

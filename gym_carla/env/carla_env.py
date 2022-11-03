@@ -21,14 +21,12 @@ class CarlaEnv:
         self.loop=args.loop
         self.agent=args.agent
         self.behavior=args.behavior
-        self.seed=args.seed
-        self.debug=args.debug
         self.res=args.res
         self.num_of_vehicles=args.num_of_vehicles
-        self.seed=args.seed
         self.sampling_resolution=args.sampling_resolution
         self.hybrid=args.hybrid
         self.stride=args.stride
+        self.buffer_size=args.buffer_size
 
         logging.info('listening to server %s:%s', args.host, args.port)
         self.client=carla.Client(self.host,self.port)
@@ -47,6 +45,10 @@ class CarlaEnv:
         self.local_planner=None
         self.ego_spawn_waypoints=self.global_planner.get_spawn_points()
         #former_wp record the ego vehicle waypoint of former step
+
+        #arguments for debug
+        self.debug=args.debug
+        self.seed=args.seed
         self.former_wp=None
 
         if self.debug:
@@ -118,13 +120,13 @@ class CarlaEnv:
        
         """Attention:
         get_location() Returns the actor's location the client recieved during last tick. The method does not call the simulator.
-        Hence the world should first tick before calling get_location, or this could cause fatal bug"""
+        Hence, upon initializing, the world should first tick before calling get_location, or it could cause fatal bug"""
         #ego_wp=self.map.get_waypoint(self.ego_vehicle.get_location())
 
         #add route planner for ego vehicle
-        self.local_planner=LocalPlanner(self.ego_vehicle,self.world,self.map)
-        self.local_planner.set_global_plan(self.global_planner.get_route(
-            self.map.get_waypoint(self.ego_vehicle.get_location())))
+        self.local_planner=LocalPlanner(self.ego_vehicle,self.world,self.map,self.buffer_size)
+        #self.local_planner.set_global_plan(self.global_planner.get_route(
+        #    self.map.get_waypoint(self.ego_vehicle.get_location())))
         self.local_planner.run_step()
 
         #set ego vehicle controller
@@ -157,14 +159,6 @@ class CarlaEnv:
             acc = action[0]
             steer = action[1]
 
-        # Convert acceleration to throttle and brake
-        if acc > 0:
-            throttle = np.clip(acc/3,0,1)
-            brake = 0
-        else:
-            throttle = 0
-            brake = np.clip(-acc/8,0,1)
-
         #route planner
         next_wps,_,self.vehicle_front=self.local_planner.run_step()
         ego_wp=self.map.get_waypoint(self.ego_vehicle.get_location(),project_to_road=False)
@@ -175,10 +169,11 @@ class CarlaEnv:
             if ego_wp.id==self.former_wp.id:
                 print()
 
-            draw_waypoints(self.world, [next_wps[0]], 0.0,z=1)
+            draw_waypoints(self.world, [next_wps[0]], 10.0,z=1)
             draw_waypoints(self.world, [ego_wp], 1.0)
             control=self.controller.run_step(30,next_wps[0])
-            #print(th_br)
+        
+            # Convert acceleration to throttle and brake
             if acc > 0:
                 throttle = np.clip(acc/4,0,1)
                 brake = 0
@@ -202,8 +197,9 @@ class CarlaEnv:
             temp=self.world.wait_for_tick()
             self.world.on_tick(lambda _:{})
 
-        if ego_wp.transform.location.distance(self.former_wp.transform.location)>=self.sampling_resolution:
+        if self.ego_vehicle.get_location().distance(self.former_wp.transform.location)>=self.sampling_resolution:
             self.former_wp=next_wps[0]
+
         #return self._get_state(),self._get_reward(),self._terminal(),self._get_info()
 
     def close(self):
@@ -322,6 +318,9 @@ class CarlaEnv:
         if self.hybrid:
             traffic_manager.set_hybrid_physics_mode(True)
             traffic_manager.set_hybrid_physics_radius(70.0)
+
+        """Attention:Do not set global_percentage_speed_difference parameter as 100,
+        all vehicles' velocity would be 0 in this way"""
         traffic_manager.global_percentage_speed_difference(-0)
 
         if self.sync:
@@ -364,7 +363,7 @@ class CarlaEnv:
                     self.world.get_actor(response.actor_id),0)
                 #print(self.world.get_actor(response.actor_id).attributes)
         
-        #Set all cars as dangerous car to test collison sensor
+        #Set car as dangerous car to test collison sensor
         #crazy car ignore traffic light, do not keep safe distance and very fast
         for i in range(1):
             danger_car=self.companion_vehicles[i]

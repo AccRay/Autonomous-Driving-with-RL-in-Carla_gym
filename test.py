@@ -101,10 +101,9 @@ if __name__=='__main__':
         default=10,
         help='The number of upfront waypoints each state should include')
     argparser.add_argument(
-        '-roads',
-        type=set,
-        default={8,11,0,40,41,1,61,62,2,117,118,3,13,15,20,5,93,94,6,157,158,7,14},
-        help='road id set for chosen route')
+        '--buffer-size',type=int,
+        default=10,
+        help='The number of look-ahead waypoints in each step')
     args=argparser.parse_args()
 
     log_level=logging.DEBUG if args.debug else logging.INFO
