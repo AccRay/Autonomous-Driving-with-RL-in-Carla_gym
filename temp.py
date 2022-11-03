@@ -134,3 +134,8 @@ class Temp:
             self.world.tick()
         else:
             self.world.wait_for_tick()
+
+if __name__=='__main__':
+    list=[]
+    list.append((1,2,3))
+    print(list[0])

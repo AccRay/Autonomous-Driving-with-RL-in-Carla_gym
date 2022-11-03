@@ -31,9 +31,9 @@ class CollisionSensor(object):
         return history
 
     @staticmethod
-    def _on_collision(weak_ref,event):
+    def _on_collision(weak_self,event):
         """On collision method"""
-        self=weak_ref()
+        self=weak_self()
         if not self:
             return
         actor_type=get_actor_display_name(event.other_actor)
@@ -43,3 +43,31 @@ class CollisionSensor(object):
         self.history.append((event.frame,intensity))
         if len(self.history)>4000:
             self.history.pop(0)
+
+class LaneInvasionSensor(object):
+    """Class for lane invasion sensors"""
+    def __init__(self,parent_actor) -> None:
+        self.sensor=None
+        self._parent=parent_actor
+        LaneInvasionSensor.count=0
+        world=self._parent.get_world()
+        bp=world.get_blueprint_library().find('sensor.other.lane_invasion')
+        self.sensor=world.spawn_actor(bp,carla.Transform(),attach_to=self._parent)
+        # We need to pass the lambda a weak reference to self to avoid circular
+        # reference.
+        weak_self=weakref.ref(self)
+        self.sensor.listen(lambda event:LaneInvasionSensor._on_invasion(weak_self,event))
+
+    def get_invasion_count(self):
+        return LaneInvasionSensor.count
+
+    @staticmethod
+    def _on_invasion(weak_self,event):
+        """On invasion method"""
+        LaneInvasionSensor.count+=1
+        self=weak_self()
+        if not self:
+            return 
+        lane_type=set(x.type for x in event.crossed_lane_markings)
+        text=['%r' %str(x).split()[-1] for x in lane_type]
+        logging.info('Crossed line %s' % ' and '.join(text))

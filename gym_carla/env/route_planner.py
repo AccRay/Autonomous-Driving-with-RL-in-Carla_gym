@@ -2,11 +2,13 @@ import carla
 import logging,random
 import numpy as np
 import networkx as nx
+import matplotlib.pyplot as plt
 from enum import Enum
 from collections import deque
+from shapely.geometry import Polygon
 from gym_carla.env.util.misc import vector,compute_magnitude_angle,\
-    is_within_distance_ahead,draw_waypoints
-import matplotlib.pyplot as plt
+    is_within_distance_ahead,draw_waypoints,compute_distance,is_within_distance
+
 
 #the following sets define the chosen route
 ROADS={8,11,0,40,41,1,61,62,2,117,118,3,13,15,20,5,93,94,6,157,158,7,14}
@@ -219,10 +221,10 @@ class GlobalPlanner:
                 intersection=intersection, type=RoadOption.LANEFOLLOW)
 
 class LocalPlanner:
-    def __init__(self, vehicle,world,map, buffer_size=12):
+    def __init__(self, vehicle,buffer_size=12):
         self._vehicle = vehicle
-        self._world = world
-        self._map = map
+        self._world = self._vehicle.get_world()
+        self._map = self._world.get_map()
 
         self._sampling_radius = 4
         self._min_distance = 1
@@ -237,7 +239,7 @@ class LocalPlanner:
         self._stop_waypoint_creation=False
 
         self._last_traffic_light = None
-        self._proximity_threshold = 15.0
+        self._proximity_threshold = self._sampling_radius*buffer_size
 
         self._waypoints_queue.append( (self._current_waypoint, RoadOption.LANEFOLLOW))
         #self._waypoints_queue.append( (self._current_waypoint.next(self._sampling_radius)[0], RoadOption.LANEFOLLOW))
@@ -266,6 +268,9 @@ class LocalPlanner:
 
     def set_sampling_redius(self,sampling_resolution):
         self._sampling_radius=sampling_resolution
+    
+    def set_min_distance(self,min_distance):
+        self._min_distance=min_distance
 
     def set_global_plan(self, current_plan, stop_waypoint_creation=True, clean_queue=True):
         """
@@ -404,12 +409,12 @@ class LocalPlanner:
         lights_list = actor_list.filter("*traffic_light*")
 
         # check possible obstacles
-        vehicle_state = self._is_vehicle_hazard(vehicle_list)
+        vehicle = self._is_vehicle_hazard(vehicle_list)
 
         # check for the state of the traffic lights
         light_state = self._is_light_red_us_style(lights_list)
 
-        return light_state, vehicle_state
+        return light_state, vehicle
 
     def _is_vehicle_hazard(self, vehicle_list):
         """
@@ -447,9 +452,9 @@ class LocalPlanner:
             if is_within_distance_ahead(loc, ego_vehicle_location,
                             self._vehicle.get_transform().rotation.yaw,
                             self._proximity_threshold):
-                return True
+                return target_vehicle
 
-        return False
+        return None
 
     def _is_light_red_us_style(self, lights_list):
         """
@@ -542,3 +547,108 @@ class LocalPlanner:
             return RoadOption.LEFT
         else:
             return RoadOption.RIGHT
+
+    def _vehicle_obstacle_detected(self, vehicle_list=None, max_distance=None, up_angle_th=90, low_angle_th=0, lane_offset=0):
+        """
+        Method to check if there is a vehicle in front of the agent blocking its path.
+
+            :param vehicle_list (list of carla.Vehicle): list contatining vehicle objects.
+                If None, all vehicle in the scene are used
+            :param max_distance: max freespace to check for obstacles.
+                If None, the base threshold value is used
+        """
+        if self._ignore_vehicles:
+            return (False, None, -1)
+
+        if not vehicle_list:
+            vehicle_list = self._world.get_actors().filter("*vehicle*")
+
+        if not max_distance:
+            max_distance = self._sampling_radius
+
+        ego_transform = self._vehicle.get_transform()
+        ego_wpt = self._map.get_waypoint(self._vehicle.get_location())
+
+        # Get the right offset
+        if ego_wpt.lane_id < 0 and lane_offset != 0:
+            lane_offset *= -1
+
+        # Get the transform of the front of the ego
+        ego_forward_vector = ego_transform.get_forward_vector()
+        ego_extent = self._vehicle.bounding_box.extent.x
+        ego_front_transform = ego_transform
+        ego_front_transform.location += carla.Location(
+            x=ego_extent * ego_forward_vector.x,
+            y=ego_extent * ego_forward_vector.y,
+        )
+
+        for target_vehicle in vehicle_list:
+            target_transform = target_vehicle.get_transform()
+            target_wpt = self._map.get_waypoint(target_transform.location, lane_type=carla.LaneType.Any)
+
+            # Simplified version for outside junctions
+            if not ego_wpt.is_junction or not target_wpt.is_junction:
+
+                if target_wpt.road_id != ego_wpt.road_id or target_wpt.lane_id != ego_wpt.lane_id  + lane_offset:
+                    next_wpt = self._local_planner.get_incoming_waypoint_and_direction(steps=3)[0]
+                    if not next_wpt:
+                        continue
+                    if target_wpt.road_id != next_wpt.road_id or target_wpt.lane_id != next_wpt.lane_id  + lane_offset:
+                        continue
+
+                target_forward_vector = target_transform.get_forward_vector()
+                target_extent = target_vehicle.bounding_box.extent.x
+                target_rear_transform = target_transform
+                target_rear_transform.location -= carla.Location(
+                    x=target_extent * target_forward_vector.x,
+                    y=target_extent * target_forward_vector.y,
+                )
+
+                if is_within_distance(target_rear_transform, ego_front_transform, max_distance, [low_angle_th, up_angle_th]):
+                    return (True, target_vehicle, compute_distance(target_transform.location, ego_transform.location))
+
+            # Waypoints aren't reliable, check the proximity of the vehicle to the route
+            else:
+                route_bb = []
+                ego_location = ego_transform.location
+                extent_y = self._vehicle.bounding_box.extent.y
+                r_vec = ego_transform.get_right_vector()
+                p1 = ego_location + carla.Location(extent_y * r_vec.x, extent_y * r_vec.y)
+                p2 = ego_location + carla.Location(-extent_y * r_vec.x, -extent_y * r_vec.y)
+                route_bb.append([p1.x, p1.y, p1.z])
+                route_bb.append([p2.x, p2.y, p2.z])
+
+                for wp, _ in self._local_planner.get_plan():
+                    if ego_location.distance(wp.transform.location) > max_distance:
+                        break
+
+                    r_vec = wp.transform.get_right_vector()
+                    p1 = wp.transform.location + carla.Location(extent_y * r_vec.x, extent_y * r_vec.y)
+                    p2 = wp.transform.location + carla.Location(-extent_y * r_vec.x, -extent_y * r_vec.y)
+                    route_bb.append([p1.x, p1.y, p1.z])
+                    route_bb.append([p2.x, p2.y, p2.z])
+
+                if len(route_bb) < 3:
+                    # 2 points don't create a polygon, nothing to check
+                    return (False, None, -1)
+                ego_polygon = Polygon(route_bb)
+
+                # Compare the two polygons
+                for target_vehicle in vehicle_list:
+                    target_extent = target_vehicle.bounding_box.extent.x
+                    if target_vehicle.id == self._vehicle.id:
+                        continue
+                    if ego_location.distance(target_vehicle.get_location()) > max_distance:
+                        continue
+
+                    target_bb = target_vehicle.bounding_box
+                    target_vertices = target_bb.get_world_vertices(target_vehicle.get_transform())
+                    target_list = [[v.x, v.y, v.z] for v in target_vertices]
+                    target_polygon = Polygon(target_list)
+
+                    if ego_polygon.intersects(target_polygon):
+                        return (True, target_vehicle, compute_distance(target_vehicle.get_location(), ego_location))
+
+                return (False, None, -1)
+
+        return (False, None, -1)

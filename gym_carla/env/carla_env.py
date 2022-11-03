@@ -6,7 +6,7 @@ import numpy as np
 from queue import Queue
 from gym_carla.env.util.pid_controller import *
 from gym_carla.env.util.misc import draw_waypoints
-from gym_carla.env.sensor import CollisionSensor
+from gym_carla.env.sensor import CollisionSensor,LaneInvasionSensor
 from gym_carla.env.route_planner import GlobalPlanner,LocalPlanner
 
 class CarlaEnv:
@@ -33,12 +33,14 @@ class CarlaEnv:
         self.client.set_timeout(5.0)
         self.world=self.client.load_world(args.map)
         self.map=self.world.get_map()
+        self.origin_settings=self.world.get_settings()
         logging.info('Carla server connected')
 
         # Record the time of total steps and resetting steps
         self.reset_step = 0
         self.total_step = 0
-        self.origin_settings=self.world.get_settings()
+        self.next_wps=None  #ego vehicle's following waypoint list
+        self.vehicle_front=None #the vehicle in front of ego vehicle
 
         #generate ego vehicle spawn points in chosen route
         self.global_planner=GlobalPlanner(self.map,self.sampling_resolution)
@@ -77,6 +79,7 @@ class CarlaEnv:
 
         #Collision sensor
         self.collision_sensor=None
+        self.lane_invasion_sensor=None
 
         #thread blocker
         self.sensor_queue=Queue(maxsize=10)
@@ -89,9 +92,10 @@ class CarlaEnv:
 
     def reset(self):
         if self.ego_vehicle is not None:
-            self._clear_actors(['sensor.other.collison',self.ego_filter,'sensor.camera.rgb'])
+            self._clear_actors(['sensor.other.collison',self.ego_filter,'sensor.camera.rgb','sensor.other.lane_invasion'])
             self.ego_vehicle=None
             self.collision_sensor=None
+            self.lane_invasion_sensor=None
             self.camera=None
             self.sensor_queue.clear()
 
@@ -106,6 +110,7 @@ class CarlaEnv:
             self.former_wp=spawn_waypoint
             self.ego_vehicle=self._try_spawn_ego_vehicle_at(spawn_waypoint.transform)
         self.collision_sensor=CollisionSensor(self.ego_vehicle)
+        self.lane_invasion_sensor=LaneInvasionSensor(self.ego_vehicle)
 
         #let the client interact with server
         if self.sync:
@@ -124,10 +129,10 @@ class CarlaEnv:
         #ego_wp=self.map.get_waypoint(self.ego_vehicle.get_location())
 
         #add route planner for ego vehicle
-        self.local_planner=LocalPlanner(self.ego_vehicle,self.world,self.map,self.buffer_size)
+        self.local_planner=LocalPlanner(self.ego_vehicle,self.buffer_size)
         #self.local_planner.set_global_plan(self.global_planner.get_route(
         #    self.map.get_waypoint(self.ego_vehicle.get_location())))
-        self.local_planner.run_step()
+        self.next_wps,_,self.vehicle_front=self.local_planner.run_step()
 
         #set ego vehicle controller
         #self.ego_vehicle.set_autopilot(self.debug,self.tm_port)
@@ -147,7 +152,8 @@ class CarlaEnv:
         self.time_step=0
         self.reset_step+=1
 
-        #return self._get_state()
+        # return state information
+        return self._get_state({'waypoints':self.next_wps,'vehicle_front':self.vehicle_front})
 
     def step(self,action):
         # Calculate acceleration and steering
@@ -160,18 +166,17 @@ class CarlaEnv:
             steer = action[1]
 
         #route planner
-        next_wps,_,self.vehicle_front=self.local_planner.run_step()
+        self.next_wps,_,self.vehicle_front=self.local_planner.run_step()
         ego_wp=self.map.get_waypoint(self.ego_vehicle.get_location(),project_to_road=False)
 
         if self.debug:
-            if next_wps[0].id !=self.former_wp.id:
-                self.former_wp=next_wps[0]
-            if ego_wp.id==self.former_wp.id:
-                print()
+            if self.next_wps[0].id !=self.former_wp.id:
+                self.former_wp=self.next_wps[0]
 
-            draw_waypoints(self.world, [next_wps[0]], 10.0,z=1)
-            draw_waypoints(self.world, [ego_wp], 1.0)
-            control=self.controller.run_step(30,next_wps[0])
+            draw_waypoints(self.world, [self.next_wps[0]], 10.0,z=1)
+            if ego_wp:
+                draw_waypoints(self.world, [ego_wp], 1.0)
+            control=self.controller.run_step(36,self.next_wps[0])
         
             # Convert acceleration to throttle and brake
             if acc > 0:
@@ -198,25 +203,36 @@ class CarlaEnv:
             self.world.on_tick(lambda _:{})
 
         if self.ego_vehicle.get_location().distance(self.former_wp.transform.location)>=self.sampling_resolution:
-            self.former_wp=next_wps[0]
+            self.former_wp=self.next_wps[0]
 
+        #Update timesteps
+        self.time_step+=1
+        self.total_step+=1
+
+        return self._get_state({'waypoints':self.next_wps,'vehicle_front':self.vehicle_front}),\
+            self._get_reward(),self._terminal(),self._get_info()
         #return self._get_state(),self._get_reward(),self._terminal(),self._get_info()
-
-    def close(self):
-        return
         
     def seed(self,seed=None):
         return
     
     def render(self,mode):
         pass
-
-    def _get_state(self):
-        """Get the current simulation state"""
-        ego_wp=self.map.get_waypoint(self.ego_vehicle.get_location(),project_to_road=True)
-        state_wps=self.local_planner._compute_next_waypoints(ego_wp,self.stride)
-
-        return state_wps
+    
+    def _get_state(self,dict):
+        wps=[]
+        if dict['waypoints']:
+            for wp in dict['waypoints']:
+                wps.append((wp.transform.location.x, wp.transform.location.y, wp.transform.location.z, wp.s))
+        
+        if dict['vehicle_front']:
+            loc=dict['vehicle_front'].get_location()
+            vfl=(loc.x, loc.y, loc.z, self.map.get_waypoint(loc).s)
+        else:
+            #No vehicle front
+            vfl=None
+        
+        return {'waypoints':wps,'vehicle_front':vfl}
 
     def _get_reward(self):
         """Calculate the step reward"""
@@ -224,7 +240,20 @@ class CarlaEnv:
 
     def _terminal(self):
         """Calculate whether to terminate the current episode"""
-        pass
+        if len(self.collision_sensor.get_collision_history())!=0:
+            logging.warn('collison happend')
+            return True
+        if self.map.get_waypoint(self.ego_vehicle.get_location()) is None:
+            logging.warn('vehicle drive out of road')
+            return True
+        if self.lane_invasion_sensor.get_invasion_count()!=0:
+            logging.warn('lane invasion occur')
+            return True
+        if len(self.next_wps)==0:
+            logging.info('vehicle reach destination, simulation terminate')
+            return True
+
+        return False
 
     def _get_info(self):
         """Rerurn simulation running information"""
@@ -303,6 +332,9 @@ class CarlaEnv:
             vehicle = self.world.try_spawn_actor(ego_bp, transform)
             if vehicle is None:
                 logging.warn("Ego vehicle generation fail")
+        
+        # if self.debug:
+        #     vehicle.show_debug_telemetry()
 
         return vehicle         
     

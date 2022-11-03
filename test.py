@@ -4,8 +4,7 @@ import logging
 from gym_carla.env.carla_env import CarlaEnv
 from temp import Temp
 
-
-if __name__=='__main__':
+def main():
     argparser = argparse.ArgumentParser(
         description='CARLA Automatic Control Client')
     argparser.add_argument(
@@ -114,12 +113,24 @@ if __name__=='__main__':
     #e=Temp(args)
     
     done=False
+    with open('./out/state_test.txt','w') as f:
+        pass
     env.reset()
+
     try:
         while(True):
             action=[2.0,0.0]
-            env.step(action)
-            #env.step(1)
+            state,reward,done,info=env.step(action)
+            
+            with open('./out/state_test.txt','a') as f:
+                for loc in state['waypoints']:
+                    f.write(str(loc)+'\n')
+                f.write('\n')
+                f.write(str(state['vehicle_front'])+'\n')
+                f.write('\n')
+
+            if done:
+                break
             #e.step()
     except KeyboardInterrupt:
         pass
@@ -135,3 +146,6 @@ if __name__=='__main__':
     #     done=False
     # while(True):
     #     continue
+
+if __name__=='__main__':
+    main()
