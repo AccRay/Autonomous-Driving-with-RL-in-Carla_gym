@@ -5,7 +5,7 @@ import time
 import numpy as np
 from queue import Queue
 from gym_carla.env.util.pid_controller import *
-from gym_carla.env.util.misc import draw_waypoints
+from gym_carla.env.util.misc import draw_waypoints,get_speed,get_acceleration
 from gym_carla.env.sensor import CollisionSensor,LaneInvasionSensor
 from gym_carla.env.route_planner import GlobalPlanner,LocalPlanner
 
@@ -36,13 +36,13 @@ class CarlaEnv:
         self.origin_settings=self.world.get_settings()
         logging.info('Carla server connected')
 
-        # Record the time of total steps and resetting steps
+        # Record the time of total steps
         self.reset_step = 0
         self.total_step = 0
         self.next_wps=None  #ego vehicle's following waypoint list
         self.vehicle_front=None #the vehicle in front of ego vehicle
 
-        #generate ego vehicle spawn points in chosen route
+        #generate ego vehicle spawn points on chosen route
         self.global_planner=GlobalPlanner(self.map,self.sampling_resolution)
         self.local_planner=None
         self.ego_spawn_waypoints=self.global_planner.get_spawn_points()
@@ -52,6 +52,13 @@ class CarlaEnv:
         self.debug=args.debug
         self.seed=args.seed
         self.former_wp=None
+
+        #arguments for caculating reward
+        self.TTC_THRESHOLD=args.TTC_th
+        self.speed_limit=args.speed_limit
+        self.penalty=args.penalty
+        self.last_acc=carla.Vector3D() #ego vehicle acceration in last step
+        self.reward_info=None
 
         if self.debug:
             #draw_waypoints(self.world,self.global_panner.get_route())
@@ -88,7 +95,7 @@ class CarlaEnv:
     def __del__(self):
         logging.info('\n Destroying all vehicles')
         self.world.apply_settings(self.origin_settings)
-        self._clear_actors(['vehicle.*','sensor.other.collison','sensor.camera.rgb'])
+        self._clear_actors(['vehicle.*','sensor.other.collison','sensor.camera.rgb','sensor.other.lane_invasion'])
 
     def reset(self):
         if self.ego_vehicle is not None:
@@ -176,7 +183,7 @@ class CarlaEnv:
             draw_waypoints(self.world, [self.next_wps[0]], 10.0,z=1)
             if ego_wp:
                 draw_waypoints(self.world, [ego_wp], 1.0)
-            control=self.controller.run_step(36,self.next_wps[0])
+            control=self.controller.run_step(self.speed_limit,self.next_wps[0])
         
             # Convert acceleration to throttle and brake
             if acc > 0:
@@ -209,8 +216,11 @@ class CarlaEnv:
         self.time_step+=1
         self.total_step+=1
 
+        reward=self._get_reward()
+        self.last_acc=self.ego_vehicle.get_acceleration()
+
         return self._get_state({'waypoints':self.next_wps,'vehicle_front':self.vehicle_front}),\
-            self._get_reward(),self._terminal(),self._get_info()
+            reward,self._terminal(),self._get_info()
         #return self._get_state(),self._get_reward(),self._terminal(),self._get_info()
         
     def seed(self,seed=None):
@@ -223,11 +233,13 @@ class CarlaEnv:
         wps=[]
         if dict['waypoints']:
             for wp in dict['waypoints']:
-                wps.append((wp.transform.location.x, wp.transform.location.y, wp.transform.location.z, wp.s))
+                wps.append((wp.transform.location.x, wp.transform.location.y, wp.s))
         
         if dict['vehicle_front']:
-            loc=dict['vehicle_front'].get_location()
-            vfl=(loc.x, loc.y, loc.z, self.map.get_waypoint(loc).s)
+            vehicle_front=dict['vehicle_front']
+            distance=self.ego_vehicle.get_location().distance(vehicle_front.get_location())
+            relative_speed=abs(get_speed(self.ego_vehicle)-get_speed(vehicle_front))
+            vfl=(distance, relative_speed, self.map.get_waypoint(vehicle_front.get_location()).s)
         else:
             #No vehicle front
             vfl=None
@@ -235,8 +247,43 @@ class CarlaEnv:
         return {'waypoints':wps,'vehicle_front':vfl}
 
     def _get_reward(self):
-        """Calculate the step reward"""
-        pass
+        """Calculate the step reward:
+        TTC: Time to collide with front vehicle
+        Eff: Ego vehicle efficiency, speed ralated
+        Com: Ego vehicle comfort, ego vehicle acceration change rate 
+        Lcen: Distance between ego vehicle location and lane center
+        """
+        ego_speed=get_speed(self.ego_vehicle)
+        TTC=float('inf')
+        if self.vehicle_front:
+            distance=self.ego_vehicle.get_location().distance(self.vehicle_front.get_location())
+            rel_speed=abs(ego_speed-get_speed(self.vehicle_front))
+            TTC=distance/rel_speed
+        fTTC=-math.exp(-TTC)
+        # if TTC>=0 and TTC<=self.TTC_THRESHOLD:
+        #     fTTC=np.log(TTC/self.TTC_THRESHOLD)
+        # else:
+        #     fTTC=0
+
+        if ego_speed>self.speed_limit:
+            fEff=0
+        else:
+            fEff=-(1-ego_speed/self.speed_limit)
+
+        cur_acc=self.ego_vehicle.get_acceleration()
+        jerk=math.sqrt((cur_acc.x-self.last_acc.x)**2+(cur_acc.y-self.last_acc.y)**2+(cur_acc.z-self.last_acc.z)**2)/(1.0/self.fps)
+        # the maximum range is change from -3 to 3 in 0.1 s, then the jerk = 60
+        fCom=-(jerk)/1200    
+
+        lane_center=self.map.get_waypoint(self.ego_vehicle.get_location(),project_to_road=True)
+        Lcen=lane_center.transform.location.distance(self.ego_vehicle.get_location())
+        if Lcen>lane_center.lane_width/2:
+            fLcen=-1
+        else:
+            fLcen=-Lcen/(lane_center.lane_width/2)
+
+        self.reward_info={'TTC':fTTC, 'Comfort':fCom, 'Efficiency':fEff, 'Lane_center':fLcen}
+        return fTTC+fEff+fCom+fLcen-self.penalty*self._terminal()
 
     def _terminal(self):
         """Calculate whether to terminate the current episode"""
@@ -247,17 +294,23 @@ class CarlaEnv:
             logging.warn('vehicle drive out of road')
             return True
         if self.lane_invasion_sensor.get_invasion_count()!=0:
+            LaneInvasionSensor.count=0
             logging.warn('lane invasion occur')
             return True
         if len(self.next_wps)==0:
             logging.info('vehicle reach destination, simulation terminate')
             return True
 
+        """A little bug yet to surface:
+        Here we set vehicle reach destination to terminal, and this might cause trouble when caculating reward,
+        since this would add penalty to reward. Normaly we should add another function as _truncated to differentiate
+        between correct termination and premature truncation"""
+
         return False
 
     def _get_info(self):
         """Rerurn simulation running information"""
-        pass
+        return self.reward_info
     
     def _sensor_callback(self,sensor_data,sensor_queue):
         array=np.frombuffer(sensor_data.raw_data,dtype=np.dtype('uint8'))

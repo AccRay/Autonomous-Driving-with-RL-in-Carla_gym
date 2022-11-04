@@ -31,6 +31,17 @@ def get_speed(vehicle):
 
     return 3.6 * math.sqrt(vel.x ** 2 + vel.y ** 2 + vel.z ** 2)
 
+def get_acceleration(vehicle):
+    """
+    Compute acceleration of a vehicle in Km/h^2.
+
+        :param vehicle: the vehicle for which speed is calculated
+        :return: acceleration as a float in Km/h^2
+    """
+    acc=vehicle.get_acceleration()
+
+    return 36*36*10*math.sqrt(acc.x**2+acc.y**2+acc.z**2)
+
 def get_trafficlight_trigger_location(traffic_light):
     """
     Calculates the yaw of the waypoint that represents the trigger volume of the traffic light

@@ -49,7 +49,7 @@ class LaneInvasionSensor(object):
     def __init__(self,parent_actor) -> None:
         self.sensor=None
         self._parent=parent_actor
-        LaneInvasionSensor.count=0
+        self.count=0
         world=self._parent.get_world()
         bp=world.get_blueprint_library().find('sensor.other.lane_invasion')
         self.sensor=world.spawn_actor(bp,carla.Transform(),attach_to=self._parent)
@@ -59,15 +59,15 @@ class LaneInvasionSensor(object):
         self.sensor.listen(lambda event:LaneInvasionSensor._on_invasion(weak_self,event))
 
     def get_invasion_count(self):
-        return LaneInvasionSensor.count
+        return self.count
 
     @staticmethod
     def _on_invasion(weak_self,event):
         """On invasion method"""
-        LaneInvasionSensor.count+=1
         self=weak_self()
         if not self:
             return 
+        self.count+=1
         lane_type=set(x.type for x in event.crossed_lane_markings)
         text=['%r' %str(x).split()[-1] for x in lane_type]
         logging.info('Crossed line %s' % ' and '.join(text))

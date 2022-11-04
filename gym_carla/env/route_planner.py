@@ -6,15 +6,9 @@ import matplotlib.pyplot as plt
 from enum import Enum
 from collections import deque
 from shapely.geometry import Polygon
+from gym_carla.env.settings import ROADS,STRAIGHT,CURVE,JUNCTION
 from gym_carla.env.util.misc import vector,compute_magnitude_angle,\
     is_within_distance_ahead,draw_waypoints,compute_distance,is_within_distance
-
-
-#the following sets define the chosen route
-ROADS={8,11,0,40,41,1,61,62,2,117,118,3,13,15,20,5,93,94,6,157,158,7,14}
-STRAIGHT={8,0,1,2,3,15,5,6,7}
-CURVE={11,13,20,14}
-JUNCTION={40,41,61,62,117,118,93,94,157,158}
 
 class RoadOption(Enum):
     """
@@ -409,14 +403,14 @@ class LocalPlanner:
         lights_list = actor_list.filter("*traffic_light*")
 
         # check possible obstacles
-        vehicle = self._is_vehicle_hazard(vehicle_list)
+        vehicle = self._vehicle_hazard(vehicle_list)
 
         # check for the state of the traffic lights
         light_state = self._is_light_red_us_style(lights_list)
 
         return light_state, vehicle
 
-    def _is_vehicle_hazard(self, vehicle_list):
+    def _vehicle_hazard(self, vehicle_list):
         """
         Check if a given vehicle is an obstacle in our way. To this end we take
         into account the road and lane the target vehicle is on and run a
@@ -428,9 +422,7 @@ class LocalPlanner:
         extension falls within the ego vehicle lane.
 
         :param vehicle_list: list of potential obstacle to check
-        :return: a tuple given by (bool_flag, vehicle), where
-            - bool_flag is True if there is a vehicle ahead blocking us
-            and False otherwise
+        :return:
             - vehicle is the blocker object itself
         """
 
